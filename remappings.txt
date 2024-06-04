@@ -1,0 +1,2 @@
+@valantislabs/contracts/=lib/valantis-core/src/
+@openzeppelin/contracts/=lib/valantis-core/lib/openzeppelin-contracts/contracts
