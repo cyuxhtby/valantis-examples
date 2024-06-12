@@ -42,9 +42,6 @@ contract SovereignMinimalTest is Test {
         token1.mint(user, 1000e18);
 
         vm.prank(deployer);
-        alm = new SovereignALM(address(pool));
-
-        vm.prank(deployer);
         router = new Router();
 
         vm.prank(deployer);
@@ -56,7 +53,7 @@ contract SovereignMinimalTest is Test {
             sovereignVault: address(0), // Not in use
             verifierModule: address(0), // Not in use
             protocolFactory: address(factory),
-            poolManager: deployer, 
+            poolManager: deployer, // Set deployer as pool manager
             isToken0Rebase: false,
             isToken1Rebase: false,
             token0AbsErrorTolerance: 0,
@@ -66,15 +63,105 @@ contract SovereignMinimalTest is Test {
         vm.prank(deployer);
         pool = new SovereignPool(args);
 
+        alm = new SovereignALM(address(pool));
+
         vm.prank(deployer);
         pool.setALM(address(alm));
 
-        router.addPool(address(token0), address(token1), address(pool), address(alm));
+        vm.prank(deployer);
+        router.setALM(address(alm));
+
+        router.addPool(address(token0), address(token1), address(pool));
 
         vm.startPrank(user);
-        token0.approve(address(router), 1000e18);
-        token1.approve(address(router), 1000e18);
+        token0.approve(address(router), type(uint256).max);
+        token1.approve(address(router), type(uint256).max);
         vm.stopPrank();
+
+        // vm.prank(address(router));
+        // token0.approve(address(alm), type(uint256).max);
+        // token1.approve(address(alm), type(uint256).max);
+    }
+
+    function testAddLiquidity() public {
+        uint256 amount0 = 500e18;
+        uint256 amount1 = 500e18;
+
+        // assertEq(token0.allowance(user, address(router)), type(uint256).max);
+        // assertEq(token1.allowance(user, address(router)), type(uint256).max);
+
+        vm.prank(user);
+        router.addLiquidity(address(token0), address(token1), amount0, amount1);
+
+        console.log("ALM token0 balance after addLiquidity:", token0.balanceOf(address(alm)));
+        console.log("ALM token1 balance after addLiquidity:", token1.balanceOf(address(alm)));
+        console.log("User token0 balance after addLiquidity:", token0.balanceOf(user));
+        console.log("User token1 balance after addLiquidity:", token1.balanceOf(user));
+        console.log("Pool token0 balance after addLiquidity:", token0.balanceOf(address(pool)));
+        console.log("Pool token1 balance after addLiquidity:", token1.balanceOf(address(pool)));
+        console.log("Router token0 allowance after addLiquidity:", token0.allowance(user, address(router)));
+        console.log("Router token1 allowance after addLiquidity:", token1.allowance(user, address(router)));
+
+        assertEq(token0.balanceOf(address(pool)), amount0);
+        assertEq(token1.balanceOf(address(pool)), amount1);
+    }
+
+    function testRemoveLiquidity() public {
+        uint256 amount0 = 500e18;
+        uint256 amount1 = 500e18;
+
+        vm.prank(user);
+        router.addLiquidity(address(token0), address(token1), amount0, amount1);
+
+        vm.prank(user);
+        router.removeLiquidity(address(token0), address(token1), amount0, amount1, user);
+
+        // Assert that user's balance is restored
+        assertEq(token0.balanceOf(address(user)), 1000e18);
+        assertEq(token1.balanceOf(address(user)), 1000e18);
+
+        // Assert that the pool's balance is zero
+        assertEq(token0.balanceOf(address(pool)), 0);
+        assertEq(token1.balanceOf(address(pool)), 0);
+    }
+
+    function testSwap() public {
+        uint256 amount0 = 500e18;
+        uint256 amount1 = 500e18;
+        uint256 swapAmount = 100e18;
+
+        vm.prank(user);
+        router.addLiquidity(address(token0), address(token1), amount0, amount1);
+
+        // Transfer swapAmount from the user to the router
+        vm.prank(user);
+        token0.transfer(address(router), swapAmount);
+
+        address[] memory path = new address[](2);
+        path[0] = address(token0);
+        path[1] = address(token1);
+        vm.prank(user);
+        uint256[] memory amounts = router.swapExactTokensForTokens(
+            swapAmount,
+            1, // amountOutMin
+            path, // path
+            user, // to
+            block.timestamp + 1 hours
+        );
+
+        uint256 fee = (swapAmount * 30) / 10000; // 0.3% fee
+        uint256 amountInAfterFee = swapAmount - fee;
+        uint256 amountOut = amounts[1];
+
+        console.log("Calculated fee:", fee);
+        console.log("Amount in after fee:", amountInAfterFee);
+        console.log("Amount out:", amountOut);
+
+        assertEq(token0.balanceOf(address(user)), 400e18 - swapAmount);
+        assertEq(token1.balanceOf(address(user)), 500e18 + amountOut);
+
+        assertEq(token0.balanceOf(address(pool)), 700e18);
+        assertEq(token1.balanceOf(address(pool)), 500e18 - amountOut);
     }
 
 }

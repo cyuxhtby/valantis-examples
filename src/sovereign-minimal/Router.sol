@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.19;
+pragma solidity ^0.8.19;
 
 import { ISovereignPool } from "@valantislabs/contracts/pools/interfaces/ISovereignPool.sol";
 import { IExtendedSovereignALM } from "./interfaces/IExtendedSovereignALM.sol";
@@ -8,14 +8,27 @@ import { SovereignPoolSwapContextData, SovereignPoolSwapParams } from "@valantis
 import "forge-std/console.sol";
 
 contract Router {
+    
+    error Router__InvalidPath();
+    error Router__PoolAlreadyExists();
+    error Router__ZeroAmount();
+    error Router__PoolDoesNotExist();
+    error Router__InsufficientOutputAmount();
+
     mapping(address => mapping(address => address)) public getPool;
     address public alm;
     address[] public allPools;
 
     event PoolAdded(address indexed token0, address indexed token1, address pool);
 
+    function setALM(address _alm) external {
+        alm = _alm;
+    }
+
     function addPool(address token0, address token1, address pool) external {
-        require(getPool[token0][token1] == address(0) && getPool[token1][token0] == address(0), "Pool already exists");
+        if (getPool[token0][token1] != address(0) || getPool[token1][token0] != address(0)) {
+            revert Router__PoolAlreadyExists();
+        }
         getPool[token0][token1] = pool;
         getPool[token1][token0] = pool;
         allPools.push(pool);
@@ -29,22 +42,18 @@ contract Router {
         address to,
         uint256 deadline
     ) external returns (uint256[] memory amounts) {
-        require(path.length >= 2, "Router: invalid path");
-
-        require(amountIn > 0, "Router: zero amount");
+        if (path.length < 2) revert Router__InvalidPath();
+        if (amountIn == 0) revert Router__ZeroAmount();
 
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
 
         address pool = getPool[path[0]][path[1]];
-        require(pool != address(0), "Router: invalid path");
+        if (pool == address(0)) revert Router__PoolDoesNotExist();
 
-        // uint256 currentSwapFeeBips = ISovereignPool(pool).getCurrentSwapFeeBips();
+        uint256 currentSwapFeeBips = ISovereignPool(pool).defaultSwapFeeBips();
 
-        // uint256 fee = (amountIn * currentSwapFeeBips) / 10000;
-        // uint256 amountInAfterFee = amountIn - fee;
-
-        uint256 fee = (amountIn * ISovereignPool(pool).defaultSwapFeeBips() / 10000);
+        uint256 fee = (amountIn * currentSwapFeeBips) / 10000;
         uint256 amountInAfterFee = amountIn - fee;
 
         for (uint256 i; i < path.length - 1; i++) {
@@ -59,8 +68,10 @@ contract Router {
             );
         }
 
-        require(amounts[amounts.length - 1] >= amountOutMin, "Router: insufficient output amount");
-    }
+        if (amounts[amounts.length - 1] < amountOutMin) {
+            revert Router__InsufficientOutputAmount();
+        }
+        }
 
     function _swapTokens(
         address input,
@@ -72,11 +83,8 @@ contract Router {
         uint256 deadline
     ) internal returns (uint256 amountOut) {
         address swapPool = getPool[input][output];
-        require(swapPool != address(0), "Router: invalid path");
+        if (swapPool == address(0)) revert Router__PoolDoesNotExist();
 
-        // IERC20(input).approve(swapPool, amountIn); // Redundant
-
-        // Transfer from msg.sender to pool
         IERC20(input).transferFrom(msg.sender, swapPool, amountIn);
 
         bool isZeroToOne = input == ISovereignPool(swapPool).token0();
@@ -101,15 +109,6 @@ contract Router {
         address output,
         address pool
     ) internal returns (uint256 amountOut) {
-        console.log("_executeSwap called with:");
-        console.log("isZeroToOne:", isZeroToOne);
-        console.log("amountIn:", amountIn);
-        console.log("amountOutMin:", amountOutMin);
-        console.log("deadline:", deadline);
-        console.log("to:", to);
-        console.log("output:", output);
-        console.log("pool:", pool);
-
         (/*uint256 amountInUsed*/, uint256 swapAmountOut) = ISovereignPool(pool).swap(
             SovereignPoolSwapParams({
                 isSwapCallback: false,
@@ -128,11 +127,6 @@ contract Router {
             })
         );
 
-        console.log("swapAmountOut:", swapAmountOut);
-        console.log("amountIn:", amountIn);
-        console.log("amountOutMin:", amountOutMin);
-        console.log("swapAmountOut:", swapAmountOut);
-
         return swapAmountOut;
     }
 
@@ -143,33 +137,16 @@ contract Router {
         uint256 amount1
     ) external {
         address pool = getPool[token0][token1];
-        require(pool != address(0), "Pool does not exist");
+        if (pool == address(0)) revert Router__PoolDoesNotExist();
 
-        console.log("Router token0 allowance for pool before approve:", IERC20(token0).allowance(address(this), pool));
-        console.log("Router token1 allowance for pool before approve:", IERC20(token1).allowance(address(this), pool));
+        IERC20(token0).transferFrom(msg.sender, address(this), amount0);
+        IERC20(token1).transferFrom(msg.sender, address(this), amount1);
+
+        IERC20(token0).approve(alm, amount0);
+        IERC20(token1).approve(alm, amount1);
 
         IERC20(token0).approve(pool, amount0);
         IERC20(token1).approve(pool, amount1);
-
-        console.log("Router token0 allowance for pool after approve:", IERC20(token0).allowance(address(this), pool));
-        console.log("Router token1 allowance for pool after approve:", IERC20(token1).allowance(address(this), pool));
-
-        console.log("Router token0 balance before transfer:", IERC20(token0).balanceOf(address(this)));
-        console.log("Router token1 balance before transfer:", IERC20(token1).balanceOf(address(this)));
-        require(IERC20(token0).balanceOf(address(this)) >= amount0, "Router: insufficient token0 balance");
-        require(IERC20(token1).balanceOf(address(this)) >= amount1, "Router: insufficient token1 balance");
-
-        IERC20(token0).transfer(alm, amount0);
-        IERC20(token1).transfer(alm, amount1);
-
-        console.log("Router token0 balance after transfer:", IERC20(token0).balanceOf(address(this)));
-        console.log("Router token1 balance after transfer:", IERC20(token1).balanceOf(address(this)));
-
-        console.log("ALM token0 balance after transfer:", IERC20(token0).balanceOf(alm));
-        console.log("ALM token1 balance after transfer:", IERC20(token1).balanceOf(alm));
-
-        console.log("ALM token0 balance before deposit:", IERC20(token0).balanceOf(alm));
-        console.log("ALM token1 balance before deposit:", IERC20(token1).balanceOf(alm));
 
         IExtendedSovereignALM(alm).depositLiquidity(amount0, amount1, abi.encode(msg.sender));
     }
@@ -182,20 +159,10 @@ contract Router {
         address to
     ) external {
         address pool = getPool[token0][token1];
-        require(pool != address(0), "Pool does not exist");
+        if (pool == address(0)) revert Router__PoolDoesNotExist();
 
-        ISovereignPool(pool).withdrawLiquidity(
-            amount0,
-            amount1,
-            alm,
-            to,
-            ""
-        );
+        IExtendedSovereignALM(alm).withdrawLiquidity(amount0, amount1, 0, 0, to, "");
     }
 
     function onDepositLiquidityCallback(uint256 _amount0, uint256 _amount1, bytes memory _data) external {}
-
-    function setALM(address _alm) external {
-        alm = _alm;
-    }
 }
