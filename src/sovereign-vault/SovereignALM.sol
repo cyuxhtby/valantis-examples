@@ -5,6 +5,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import {ISovereignVault} from "./interfaces/ISovereignVault.sol";
 import {ISovereignALM} from "@valantislabs/contracts/ALM/interfaces/ISovereignALM.sol";
 import {ALMLiquidityQuoteInput, ALMLiquidityQuote} from "@valantislabs/contracts/ALM/structs/SovereignALMStructs.sol";
 import {ISovereignPool} from "@valantislabs/contracts/pools/interfaces/ISovereignPool.sol";
@@ -19,12 +20,14 @@ contract SovereignALM is ISovereignALM {
     event LogSwapCallback(bool isZeroToOne);
 
     address public immutable pool;
+    address public immutable vault;
 
     uint256 public fee0;
     uint256 public fee1;
 
-    constructor(address _pool) {
+    constructor(address _pool, address _vault) {
         pool = _pool;
+        vault = _vault;
     }
 
     modifier onlyPool() {
@@ -99,13 +102,25 @@ contract SovereignALM is ISovereignALM {
 
         (address token0, address token1) = (ISovereignPool(pool).token0(), ISovereignPool(pool).token1());
 
+        // Transfer tokens to vault
         if (_amount0 > 0) {
-            IERC20(token0).safeTransferFrom(user, msg.sender, _amount0);
+            IERC20(token0).safeTransferFrom(user, vault, _amount0);
         }
 
         if (_amount1 > 0) {
-            IERC20(token1).safeTransferFrom(user, msg.sender, _amount1);
+            IERC20(token1).safeTransferFrom(user, vault, _amount1);
         }
+        
+        // Update vault reserves
+        address[] memory tokens = new address[](2);
+        tokens[0] = token0;
+        tokens[1] = token1;
+
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = _amount0;
+        amounts[1] = _amount1;
+
+        ISovereignVault(vault).updateReserves(pool, tokens, amounts);
     }
 
     function onSwapCallback(bool _isZeroToOne, uint256, uint256) external override onlyPool {
